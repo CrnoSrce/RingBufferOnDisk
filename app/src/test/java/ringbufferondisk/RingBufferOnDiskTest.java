@@ -15,14 +15,16 @@ import static org.junit.Assert.assertTrue;
 public class RingBufferOnDiskTest
 {
     public static final int DEFAULT_MAX_BYTES = 64;
+    public static final int STREAMING_BUFFER_SIZE = 1024;
     private RandomAccessFile fileBuffer;
     private RingBufferOnDisk ringBufferOnDisk;
 
     @Before
     public void setUp() throws Exception
     {
-        fileBuffer = new RandomAccessFile("buffer.dat", "rw");
-        ringBufferOnDisk = new RingBufferOnDisk(DEFAULT_MAX_BYTES, fileBuffer);
+        fileBuffer = new RandomAccessFile("streamingBuffer.dat", "rw");
+        ringBufferOnDisk = new RingBufferOnDisk(DEFAULT_MAX_BYTES, fileBuffer,
+                                                STREAMING_BUFFER_SIZE);
     }
 
     @After
@@ -107,39 +109,61 @@ public class RingBufferOnDiskTest
     }
 
     @Test
-    public void testSendToOutputStream() throws Exception
+    public void testSendToOutputStreamStreamingBufferBiggerThanMaxBytes() throws Exception
     {
+        testSendToOutputStreamCore(DEFAULT_MAX_BYTES, ringBufferOnDisk);
+    }
+
+    @Test
+    public void testSendToOutputStreamStreamingBufferSmallerThanMaxBytes() throws Exception
+    {
+        final int MAX_BYTES = Byte.MAX_VALUE;
+        final RingBufferOnDisk smallStreamingBufferRingBuffer =
+            new RingBufferOnDisk(MAX_BYTES, fileBuffer, MAX_BYTES / 16);
+        testSendToOutputStreamCore(MAX_BYTES, smallStreamingBufferRingBuffer);
+    }
+
+    private void testSendToOutputStreamCore(final int maxBytes,
+                                            final RingBufferOnDisk ringBufferToUse) throws Exception
+    {
+        assertTrue(
+            "We write a byte pattern so this only works for sizes less than the max byte value",
+            maxBytes <= Byte.MAX_VALUE);
         // start out by writing an incrementing byte pattern
-        for(int i = 0; i < DEFAULT_MAX_BYTES; i++)
+        for(int i = 0; i < maxBytes; i++)
         {
-            ringBufferOnDisk.add(i);
+            ringBufferToUse.add(i);
         }
-        testAllRanges(0);
+        testAllRanges(0, maxBytes, ringBufferToUse);
 
         // now add items, testing all ranges each time
-        for(int i = 0; i < DEFAULT_MAX_BYTES; i++)
+        for(int i = 0; i < maxBytes; i++)
         {
-            ringBufferOnDisk.add(DEFAULT_MAX_BYTES + i);
-            testAllRanges(i + 1);
+            ringBufferToUse.add(maxBytes + i);
+            testAllRanges(i + 1, maxBytes, ringBufferToUse);
         }
     }
 
-    private void testAllRanges(final int rangePatternStartVal) throws IOException
+    private void testAllRanges(final int rangePatternStartVal, final int maxBytes,
+                               final RingBufferOnDisk ringBufferToUse)
+        throws IOException
     {
-        for(int rangeStart = 0; rangeStart < DEFAULT_MAX_BYTES; rangeStart++)
+        for(int rangeStart = 0; rangeStart < maxBytes; rangeStart++)
         {
-            for(int rangeSize = 0; rangeSize < DEFAULT_MAX_BYTES - rangeStart; rangeSize++)
+            for(int rangeSize = 0; rangeSize < maxBytes - rangeStart; rangeSize++)
             {
-                testGetRange(rangeStart, rangeSize, rangePatternStartVal + rangeStart);
+                testGetRange(rangeStart, rangeSize, rangePatternStartVal + rangeStart,
+                             ringBufferToUse);
             }
         }
     }
 
     private void testGetRange(final long startOffset, final long count,
-                              final int rangePatternStartVal) throws IOException
+                              final int rangePatternStartVal,
+                              final RingBufferOnDisk ringBufferToUse) throws IOException
     {
         final ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-        ringBufferOnDisk.sendToOutputStream(outputStream, startOffset, count);
+        ringBufferToUse.sendToOutputStream(outputStream, startOffset, count);
         outputStream.close();
         final byte[] readBytes = outputStream.toByteArray();
         if(count == 0)
@@ -158,7 +182,7 @@ public class RingBufferOnDiskTest
         {
             final String extraInfo = "Wrong pattern value at index: " + i + " for count: " +
                 count + " using the starting pattern of " + rangePatternStartVal;
-            assertEquals(extraInfo, rangePatternStartVal + i, readBytes[i]);
+            assertEquals(extraInfo, rangePatternStartVal + i, remapAsInt(readBytes[i]));
         }
     }
 
@@ -172,7 +196,7 @@ public class RingBufferOnDiskTest
             final String extraInfo =
                 "Adding new value: " + newExpectedValue + " at index: " + i +
                     " should not change the first value because we're pushing less than" +
-                    "a full buffer.";
+                    "a full streamingBuffer.";
             assertEquals(extraInfo, oldExpectedValue, ringBufferOnDisk.get(0));
         }
 
@@ -180,5 +204,18 @@ public class RingBufferOnDiskTest
         ringBufferOnDisk.add(newExpectedValue);
         assertNotEquals(oldExpectedValue, ringBufferOnDisk.get(0));
         assertEquals(newExpectedValue, ringBufferOnDisk.get(0));
+    }
+
+    private int remapAsInt(final byte readByte)
+    {
+        if(readByte >= 0)
+        {
+            return readByte;
+        }
+        else
+        {
+            final int intVal = readByte + 256;
+            return intVal;
+        }
     }
 }

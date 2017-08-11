@@ -5,18 +5,20 @@ import java.io.OutputStream;
 import java.io.RandomAccessFile;
 
 /**
- * This class implements a ring/circular buffer for a fixed number of bytes
+ * This class implements a ring/circular streamingBuffer for a fixed number of bytes
  * that doesn't use any RAM. Instead, it operates direct to file.
  */
 public class RingBufferOnDisk
 {
     private final long maxBytes;
     private final RandomAccessFile fileBuffer;
+    final byte[] streamingBuffer;
     long currentByteOffset = 0;
-    long bytesAdded = 0; // after the initial phase of filling the buffer, this will be == capacity()
+    long bytesAdded = 0; // after the initial phase of filling the streamingBuffer, this will be == capacity()
 
     RingBufferOnDisk(final long maxBytes,
-                     final RandomAccessFile fileBuffer) throws IOException
+                     final RandomAccessFile fileBuffer,
+                     final int streamBufferSize) throws IOException
     {
         if(maxBytes < 0)
         {
@@ -26,6 +28,7 @@ public class RingBufferOnDisk
         this.fileBuffer = fileBuffer;
         this.fileBuffer.setLength(maxBytes);
         this.fileBuffer.seek(0L);
+        streamingBuffer = new byte[streamBufferSize];
     }
 
     public void add(final int valToAdd) throws IOException
@@ -40,7 +43,7 @@ public class RingBufferOnDisk
     }
 
     /**
-     * @param offset the offset from the start of the ring buffer. Should be <= {@link #capacity()}. If not, it will be clamped.
+     * @param offset the offset from the start of the ring streamingBuffer. Should be <= {@link #capacity()}. If not, it will be clamped.
      * @return the byte at the given offset
      */
     public int get(final long offset) throws IOException
@@ -51,30 +54,15 @@ public class RingBufferOnDisk
             throw new IllegalArgumentException();
         }
 
-        if(count() < capacity())
-        {
-            return getFromFile(offset);
-        }
-        else
-        {
-            final long offsetInFile = (currentByteOffset + offset) % capacity();
-            return getFromFile(offsetInFile);
-        }
-    }
-
-    private int getFromFile(final long offsetInFile) throws IOException
-    {
-        final long savedFilePos = currentByteOffset;
-        fileBuffer.seek(offsetInFile);
-        final int readVal = fileBuffer.read();
-        fileBuffer.seek(savedFilePos);
-        return readVal;
+        final long fileOffset = calcFileOffset(offset);
+        return getFromFile(fileOffset);
     }
 
     /**
-     * This method sends data straight from the circular buffer on disk
+     * This method sends data straight from the circular streamingBuffer on disk
      * straight to an OutputStream without needing to use large amounts
-     * of RAM as an intermediate step.
+     * of RAM as an intermediate step. The OutputStream can be optionally
+     * buffered, of course.
      *
      * @param outputStream the destination for the data read
      * @param offset offset for first data item to read
@@ -86,14 +74,66 @@ public class RingBufferOnDisk
                                    final long offset,
                                    final long numBytesToSend) throws IOException
     {
+        // to improve efficiency, we want to write as much data in one go as possible
+        final long startFileOffset = calcFileOffset(offset);
+        final long endFileOffset = calcFileOffset(offset + numBytesToSend);
         final long actualBytesToSend = Math.min(numBytesToSend, count());
-        final long endOffset = offset + actualBytesToSend;
-        for(long i = offset; i < endOffset; i++)
+        if(endFileOffset < startFileOffset)
         {
-            final int currentVal = get(i);
-            outputStream.write(currentVal);
+            // index has looped around in a full streamingBuffer
+            streamRange(outputStream, startFileOffset, capacity());
+            streamRange(outputStream, 0, endFileOffset);
+        }
+        else
+        {
+            streamRange(outputStream, startFileOffset, endFileOffset);
         }
         return actualBytesToSend;
+    }
+
+    /**
+     * Streams data in the range [startFileOffset, endF) through a small streamingBuffer from
+     * the RandomAccessFile to the OutputStream.
+     *
+     * @param outputStream The destination stream
+     * @param startFileOffset the offset first byte of data to send
+     * @param endFileOffset the offset just after the last byte to send
+     */
+    private void streamRange(final OutputStream outputStream,
+                             final long startFileOffset,
+                             final long endFileOffset) throws IOException
+    {
+        if(endFileOffset < startFileOffset)
+        {
+            throw new IllegalArgumentException(
+                "Can only stream forwards from the file to output. " +
+                    "To stream from a circular streamingBuffer, call " +
+                    "streamRange() twice for the ranges " +
+                    "[start, capacity) and [0, endOffset)");
+        }
+        if(endFileOffset > capacity())
+        {
+            throw new IndexOutOfBoundsException("End offset past the end of the file");
+        }
+
+        long bytesLeftToCopy = (endFileOffset - startFileOffset);
+        long currentReadOffset = startFileOffset;
+        while(bytesLeftToCopy > 0)
+        {
+            final int bytesRead =
+                getFromFile(currentReadOffset, streamingBuffer,
+                            (int) Math.min(bytesLeftToCopy, streamingBuffer.length));
+            if(bytesRead == -1)
+            {
+                throw new IndexOutOfBoundsException("Streaming read past the end of the file");
+            }
+            else
+            {
+                outputStream.write(streamingBuffer, 0, bytesRead);
+                bytesLeftToCopy -= bytesRead;
+                currentReadOffset += bytesRead;
+            }
+        }
     }
 
     public long capacity()
@@ -110,5 +150,39 @@ public class RingBufferOnDisk
     {
         currentByteOffset = 0;
         fileBuffer.seek(0L);
+    }
+
+    private long calcFileOffset(final long logicalOffset)
+    {
+        if(count() < capacity())
+        {
+            return logicalOffset;
+        }
+        else
+        {
+            // the logical "zero" index is the item just after the tail
+            final long offsetInFile = (currentByteOffset + logicalOffset) % capacity();
+            return offsetInFile;
+        }
+    }
+
+    private int getFromFile(final long offsetInFile) throws IOException
+    {
+        final long savedFilePos = currentByteOffset;
+        fileBuffer.seek(offsetInFile);
+        final int readVal = fileBuffer.read();
+        fileBuffer.seek(savedFilePos);
+        return readVal;
+    }
+
+    private int getFromFile(final long offsetInFile,
+                            final byte[] dest,
+                            final int numBytesToRead) throws IOException
+    {
+        final long savedFilePos = currentByteOffset;
+        fileBuffer.seek(offsetInFile);
+        final int numBytesRead = fileBuffer.read(dest, 0, Math.min(numBytesToRead, dest.length));
+        fileBuffer.seek(savedFilePos);
+        return numBytesRead;
     }
 }
