@@ -109,6 +109,15 @@ public class RingBufferOnDiskTest
     }
 
     @Test
+    public void testBulkAddAndGet() throws Exception
+    {
+        for(int i = 0; i < DEFAULT_MAX_BYTES; i++)
+        {
+            testBulkAddAndGetCore(i);
+        }
+    }
+
+    @Test
     public void testSendToOutputStreamStreamingBufferBiggerThanMaxBytes() throws Exception
     {
         testSendToOutputStreamCore(DEFAULT_MAX_BYTES, ringBufferOnDisk);
@@ -184,6 +193,57 @@ public class RingBufferOnDiskTest
                 count + " using the starting pattern of " + rangePatternStartVal;
             assertEquals(extraInfo, rangePatternStartVal + i, remapAsInt(readBytes[i]));
         }
+    }
+
+    private void testBulkAddAndGetCore(final int writeStartOffset) throws Exception
+    {
+        final RingBufferOnDisk ringBufferToUse =
+            new RingBufferOnDisk(DEFAULT_MAX_BYTES, fileBuffer,
+                                 STREAMING_BUFFER_SIZE);
+
+        // start by filling the buffer with a tag value
+        for(int i = 0; i < ringBufferToUse.capacity(); i++)
+        {
+            ringBufferToUse.add(Byte.MIN_VALUE);
+            assertTrue("The ring buffer's 'tail' must always be within its capacity. Index: " + i,
+                       ringBufferToUse.currentByteOffset < ringBufferToUse.capacity());
+        }
+        // and now "seek" to the writeStartOffset by writing those values
+        // the logical zero index is at writeStatOffset+1
+        for(int i = 0; i < writeStartOffset; i++)
+        {
+            ringBufferToUse.add(Byte.MIN_VALUE);
+            assertTrue("The ring buffer's 'tail' must always be within its capacity. Index: " + i,
+                       ringBufferToUse.currentByteOffset < ringBufferToUse.capacity());
+        }
+        // now add a recognisable sequence
+        final byte[] seq = createByteSequence((int) ringBufferToUse.capacity());
+        try
+        {
+            ringBufferToUse.add(seq);
+        }
+        catch(IndexOutOfBoundsException e)
+        {
+            throw new Exception(
+                "Write start offset: " + writeStartOffset + ". Ring Buffer capacity: "
+                    + ringBufferToUse.capacity());
+        }
+        // and check for it - since we added a full capacity() count of bytes
+        // the start logical index for our data will be zero
+        for(int i = 0; i < seq.length; i++)
+        {
+            assertEquals(seq[i], ringBufferToUse.get(i));
+        }
+    }
+
+    private byte[] createByteSequence(final int numBytes)
+    {
+        final byte[] seq = new byte[numBytes];
+        for(int i = 0; i < seq.length; i++)
+        {
+            seq[i] = (byte) i;
+        }
+        return seq;
     }
 
     private void almostFillWithNewValue(final RingBufferOnDisk ringBufferOnDisk,

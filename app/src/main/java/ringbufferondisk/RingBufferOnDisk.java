@@ -42,6 +42,25 @@ public class RingBufferOnDisk
         }
     }
 
+    public void add(final byte[] valsToAdd) throws IOException
+    {
+        long endFileOffset = currentByteOffset + valsToAdd.length;
+        if(endFileOffset > capacity())
+        {
+            final int numBytesInFirstWrite = (int) (capacity() - currentByteOffset);
+            fileBuffer.write(valsToAdd, 0, numBytesInFirstWrite);
+            loopBackToStart();
+            final int numBytesInSecondWrite = valsToAdd.length - numBytesInFirstWrite;
+            fileBuffer.write(valsToAdd, numBytesInFirstWrite, numBytesInSecondWrite);
+            currentByteOffset = numBytesInSecondWrite;
+        }
+        else
+        {
+            fileBuffer.write(valsToAdd, 0, valsToAdd.length);
+            currentByteOffset = endFileOffset;
+        }
+    }
+
     /**
      * @param offset the offset from the start of the ring streamingBuffer. Should be <= {@link #capacity()}. If not, it will be clamped.
      * @return the byte at the given offset
@@ -51,7 +70,7 @@ public class RingBufferOnDisk
         if((offset < 0) ||
             (offset >= count()))
         {
-            throw new IllegalArgumentException();
+            throw new IllegalArgumentException("Offset: " + offset + ". Count: " + count());
         }
 
         final long fileOffset = calcFileOffset(offset);
