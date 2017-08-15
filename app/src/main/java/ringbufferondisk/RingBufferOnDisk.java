@@ -111,7 +111,7 @@ public class RingBufferOnDisk
     }
 
     /**
-     * Streams data in the range [startFileOffset, endF) through a small streamingBuffer from
+     * Streams data in the range [startFileOffset, endFileOffset) through a small streamingBuffer from
      * the RandomAccessFile to the OutputStream.
      *
      * @param outputStream The destination stream
